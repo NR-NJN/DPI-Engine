@@ -73,7 +73,12 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+#include <stdio.h>
+int _write(int file, char *ptr, int len) {
+    // Force all printf output down the UART1 pipeline
+    HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
+    return len;
+}
 /* USER CODE END 0 */
 
 /**
@@ -112,45 +117,108 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET); 
+
+// 2. Put the radio in Reset (PE8 = Low)
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_Delay(50); // Wait 50ms
+
+// 3. Wake up the radio (PB13 = High)
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET); 
+
+// 4. Release the Reset (PE8 = High)
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_SET);
+
+// 5. Wait for the radio's internal bootloader to finish starting up
+  HAL_Delay(500);
   /* USER CODE BEGIN 2 */
-  char uart_buf[100];
-    int buf_len;
   
-    buf_len = sprintf(uart_buf, "\r\n--- Threat Proxy Booting ---\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, buf_len, 100);
+  printf("\r\n--- COMMENCING SPI ATTACK (TWO-STAGE EXTRACTION) ---\r\n");
+  fflush(stdout);
 
-  // 2. Hardware Reset the Inventek Wi-Fi Module
-    buf_len = sprintf(uart_buf, "[*] Asserting Wi-Fi Reset Pin (PE8)...\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, buf_len, 100);
-  
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_RESET); // Kill power
-    HAL_Delay(100);                                       // Wait 100ms
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_SET);   // Restore power
-    HAL_Delay(500);                                       // Give it half a second to boot
+// 1. THE PERFECT COMMAND
+// 4 bytes. Even alignment. Strictly formatted.
+uint8_t tx_cmd[] = "I?\r\n"; // FIXED: Double quotes for strings
 
-  // 3. Force the Wakeup Pin High
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);
+HAL_Delay(1); 
+HAL_SPI_Transmit(&hspi3, tx_cmd, 4, 100);
+HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);
 
-  // 4. Wait for the Module to assert the Data Ready Pin (PE1)
-    buf_len = sprintf(uart_buf, "[*] Waiting for Inventek Data Ready (PE1)...\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, buf_len, 100);
-  
-  // This is a blocking loop. If the hardware is dead, it hangs here forever.
-    while (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_RESET) {
-      // Waiting...
+printf("[*] Transmit passed. Waiting for Stage 1 (The Echo)...\r\n");
+fflush(stdout);
+
+// 2. STAGE 1: DRAIN THE ECHO
+uint32_t timeout = HAL_GetTick() + 1000; 
+uint8_t radio_alive = 0;
+
+while(HAL_GetTick() < timeout) {
+    if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+        radio_alive = 1;
+        break;
+    }
+}
+
+if(!radio_alive) {
+    printf("[!] ERROR: Stage 1 Timeout. Radio is ignoring the command.\r\n");
+} else {
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
+    uint8_t dummy = 0x0A;
+    uint8_t rx_byte;
+
+    printf("[*] Echo Buffer: \r\n");
+    int loop_safeguard = 0;
+    while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET && loop_safeguard < 100) {
+        HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
+        printf("%02X ", rx_byte); // Print the raw hex value
+        loop_safeguard++;
+    }
+    
+    if(loop_safeguard >= 100) {
+        printf("\r\n[!] Kicked out of loop by safeguard. DATARDY never went low!\r\n");
+    }
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
+    printf("\r\n");
+    fflush(stdout);
+
+    printf("[*] Echo cleared. Radio is thinking. Waiting for Stage 2...\r\n");
+
+    // 3. STAGE 2: DRAIN THE PAYLOAD
+    timeout = HAL_GetTick() + 2000; 
+    uint8_t got_payload = 0;
+
+    while(HAL_GetTick() < timeout) {
+        if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+            got_payload = 1;
+            break;
+        }
     }
 
-  // 5. Victory Condition
-    buf_len = sprintf(uart_buf, "[+] Wi-Fi Module Awake and Ready for SPI Commands!\r\n\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t *)uart_buf, buf_len, 100);
-  /* USER CODE END 2 */
+    if(got_payload) {
+        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
+        printf("\r\n--- INVENTEK FIRMWARE STRING ---\r\n");
 
+        while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+            HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
+            // FIXED: Allow \r (0x0D) and \n (0x0A) to print
+            if((rx_byte >= 0x20 && rx_byte <= 0x7E) || rx_byte == '\r' || rx_byte == '\n') {
+                printf("%c", rx_byte);
+            }
+        }
+
+        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
+        printf("\r\n--------------------------------\r\n");
+    } else {
+        printf("[!] ERROR: Stage 2 Timeout. The radio dropped the connection.\r\n");
+    }
+}
+fflush(stdout);
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
-
+    
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -354,11 +422,11 @@ static void MX_SPI3_Init(void)
   hspi3.Instance = SPI3;
   hspi3.Init.Mode = SPI_MODE_MASTER;
   hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
