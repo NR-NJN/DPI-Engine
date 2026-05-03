@@ -19,6 +19,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include <stdio.h>
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
@@ -321,6 +322,12 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   if(hspi->Instance==SPI3)
   {
+   __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitTypeDef led_config = {0};
+    led_config.Pin = GPIO_PIN_14;
+    led_config.Mode = GPIO_MODE_OUTPUT_PP;
+    HAL_GPIO_Init(GPIOB, &led_config);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
     /* USER CODE BEGIN SPI3_MspInit 0 */
 
     /* USER CODE END SPI3_MspInit 0 */

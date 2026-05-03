@@ -117,22 +117,36 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET); 
+  
+  // Step A: FORCE WAKEUP LOW. This is the magic key that selects SPI Mode!
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); 
+    
+  // Step B: Assert Reset (Pull Low)
+  HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_RESET);
+  HAL_Delay(50);  // Hold it in reset for 50ms so the radio completely powers down
 
-// 2. Put the radio in Reset (PE8 = Low)
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_RESET);
-  HAL_Delay(50); // Wait 50ms
-
-// 3. Wake up the radio (PB13 = High)
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET); 
-
-// 4. Release the Reset (PE8 = High)
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_SET);
-
-// 5. Wait for the radio's internal bootloader to finish starting up
+  // Step C: Release Reset (Pull High). The radio boots up and reads PB13 here!
+  HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_SET);
+    
+  // Step D: Wait for the Inventek's internal OS to finish booting
   HAL_Delay(500);
   /* USER CODE BEGIN 2 */
+  printf("[*] Draining internal boot prompt...\r\n");
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // Pull CS Low
   
+  uint8_t dummy_tx = 0x0A;
+  uint8_t dummy_rx = 0;
+  
+  // Clock out data as long as the radio is holding DATARDY high
+  while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+      HAL_SPI_TransmitReceive(&hspi3, &dummy_tx, &dummy_rx, 1, 10);
+      if((dummy_rx >= 0x20 && dummy_rx <= 0x7E) || dummy_rx == '\r' || dummy_rx == '\n') {
+          printf("%c", dummy_rx);
+      }
+  }
+  
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); // Pull CS High
+  printf("\r\n[*] Boot prompt cleared. Radio is ready.\r\n");
   printf("\r\n--- COMMENCING SPI ATTACK (TWO-STAGE EXTRACTION) ---\r\n");
   fflush(stdout);
 
@@ -592,12 +606,22 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(ISM43362_SPI3_CSN_GPIO_Port, ISM43362_SPI3_CSN_Pin, GPIO_PIN_SET);
 
+   // Hold radio in Reset
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);       // Force BOOT0 Low (Normal Mode)
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : M24SR64_Y_RF_DISABLE_Pin M24SR64_Y_GPO_Pin ISM43362_RST_Pin ISM43362_SPI3_CSN_Pin */
   GPIO_InitStruct.Pin = M24SR64_Y_RF_DISABLE_Pin|M24SR64_Y_GPO_Pin|ISM43362_RST_Pin|ISM43362_SPI3_CSN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13; // PB12 (Boot), PB13 (Wakeup)
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : USB_OTG_FS_OVRCR_EXTI3_Pin SPSGRF_915_GPIO3_EXTI5_Pin SPBTLE_RF_IRQ_EXTI6_Pin ISM43362_DRDY_EXTI1_Pin */
   GPIO_InitStruct.Pin = USB_OTG_FS_OVRCR_EXTI3_Pin|SPSGRF_915_GPIO3_EXTI5_Pin|SPBTLE_RF_IRQ_EXTI6_Pin|ISM43362_DRDY_EXTI1_Pin;
