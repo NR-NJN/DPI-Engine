@@ -119,114 +119,87 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   
   // Step A: FORCE WAKEUP LOW. This is the magic key that selects SPI Mode!
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); 
-    
-  // Step B: Assert Reset (Pull Low)
+  printf("\r\n[*] Waking up Inventek Module...\r\n");
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); // SPI Mode
   HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_RESET);
-  HAL_Delay(50);  // Hold it in reset for 50ms so the radio completely powers down
-
-  // Step C: Release Reset (Pull High). The radio boots up and reads PB13 here!
+  HAL_Delay(50);
   HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_SET);
-    
-  // Step D: Wait for the Inventek's internal OS to finish booting
-  HAL_Delay(500);
-  /* USER CODE BEGIN 2 */
+  HAL_Delay(500); 
+
+  // ---------------------------------------------------------
+  // 2. STAGE 0: DRAIN THE BOOT PROMPT
+  // ---------------------------------------------------------
   printf("[*] Draining internal boot prompt...\r\n");
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // Pull CS Low
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // CS Low
   
-  uint8_t dummy_tx = 0x0A;
-  uint8_t dummy_rx = 0;
-  
-  // Clock out data as long as the radio is holding DATARDY high
+  uint8_t dummy = 0x0A;
+  uint8_t rx_byte;
   while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-      HAL_SPI_TransmitReceive(&hspi3, &dummy_tx, &dummy_rx, 1, 10);
-      if((dummy_rx >= 0x20 && dummy_rx <= 0x7E) || dummy_rx == '\r' || dummy_rx == '\n') {
-          printf("%c", dummy_rx);
+      HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
+      if((rx_byte >= 0x20 && rx_byte <= 0x7E) || rx_byte == '\r' || rx_byte == '\n') {
+          printf("%c", rx_byte);
       }
   }
-  
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); // Pull CS High
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); // CS High
   printf("\r\n[*] Boot prompt cleared. Radio is ready.\r\n");
-  printf("\r\n--- COMMENCING SPI ATTACK (TWO-STAGE EXTRACTION) ---\r\n");
-  fflush(stdout);
 
-// 1. THE PERFECT COMMAND
-// 4 bytes. Even alignment. Strictly formatted.
-uint8_t tx_cmd[] = "I?\r\n"; // FIXED: Double quotes for strings
+  // Give the radio 10ms to switch from TX to RX mode
+  HAL_Delay(10);
 
-HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);
-HAL_Delay(1); 
-HAL_SPI_Transmit(&hspi3, tx_cmd, 4, 100);
-HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);
+  // ---------------------------------------------------------
+  // 3. STAGE 1: TRANSMIT THE COMMAND
+  // ---------------------------------------------------------
+  printf("\r\n--- COMMENCING SPI ATTACK ---\r\n");
+  
+  // THE MAGIC FIX: We pre-swap the bytes so the 16-bit radio reads "I?\r\n"
+  uint8_t tx_cmd[] = "?I\n\r"; 
+  
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_Delay(1); 
+  HAL_SPI_Transmit(&hspi3, tx_cmd, 4, 100);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);
 
-printf("[*] Transmit passed. Waiting for Stage 1 (The Echo)...\r\n");
-fflush(stdout);
+  // ---------------------------------------------------------
+  // 4. STAGE 2: DRAIN THE PAYLOAD
+  // ---------------------------------------------------------
+  uint32_t timeout = HAL_GetTick() + 2000; 
+  uint8_t got_payload = 0;
 
-// 2. STAGE 1: DRAIN THE ECHO
-uint32_t timeout = HAL_GetTick() + 1000; 
-uint8_t radio_alive = 0;
+  while(HAL_GetTick() < timeout) {
+      if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+          got_payload = 1;
+          break;
+      }
+  }
 
-while(HAL_GetTick() < timeout) {
-    if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-        radio_alive = 1;
-        break;
-    }
-}
+  if(got_payload) {
+      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
+      printf("\r\n--- INVENTEK FIRMWARE STRING ---\r\n");
 
-if(!radio_alive) {
-    printf("[!] ERROR: Stage 1 Timeout. Radio is ignoring the command.\r\n");
-} else {
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
-    uint8_t dummy = 0x0A;
-    uint8_t rx_byte;
+      // FIX: Create a 2-byte array to hold the 16-bit words
+      uint8_t dummy_word[2] = {0x0A, 0x0A};
+      uint8_t rx_word[2] = {0};
 
-    printf("[*] Echo Buffer: \r\n");
-    int loop_safeguard = 0;
-    while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET && loop_safeguard < 100) {
-        HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
-        printf("%02X ", rx_byte); // Print the raw hex value
-        loop_safeguard++;
-    }
-    
-    if(loop_safeguard >= 100) {
-        printf("\r\n[!] Kicked out of loop by safeguard. DATARDY never went low!\r\n");
-    }
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
-    printf("\r\n");
-    fflush(stdout);
+      while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+          
+          // Pull 2 bytes at a time from the SPI bus
+          HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
+          
+          // Print byte 1 (The second byte received)
+          if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') {
+              printf("%c", rx_word[1]);
+          }
+          // Print byte 0 (The first byte received)
+          if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') {
+              printf("%c", rx_word[0]);
+          }
+      }
 
-    printf("[*] Echo cleared. Radio is thinking. Waiting for Stage 2...\r\n");
-
-    // 3. STAGE 2: DRAIN THE PAYLOAD
-    timeout = HAL_GetTick() + 2000; 
-    uint8_t got_payload = 0;
-
-    while(HAL_GetTick() < timeout) {
-        if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-            got_payload = 1;
-            break;
-        }
-    }
-
-    if(got_payload) {
-        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
-        printf("\r\n--- INVENTEK FIRMWARE STRING ---\r\n");
-
-        while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-            HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
-            // FIXED: Allow \r (0x0D) and \n (0x0A) to print
-            if((rx_byte >= 0x20 && rx_byte <= 0x7E) || rx_byte == '\r' || rx_byte == '\n') {
-                printf("%c", rx_byte);
-            }
-        }
-
-        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
-        printf("\r\n--------------------------------\r\n");
-    } else {
-        printf("[!] ERROR: Stage 2 Timeout. The radio dropped the connection.\r\n");
-    }
-}
-fflush(stdout);
+      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
+      printf("\r\n--------------------------------\r\n");
+  } else {
+      printf("[!] ERROR: Stage 2 Timeout.\r\n");
+  }
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
