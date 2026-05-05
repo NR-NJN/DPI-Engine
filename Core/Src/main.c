@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "secrets.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -75,7 +76,7 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 /* USER CODE BEGIN 0 */
 #include <stdio.h>
 int _write(int file, char *ptr, int len) {
-    // Force all printf output down the UART1 pipeline
+     
     HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
     return len;
 }
@@ -118,19 +119,14 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   
-  // Step A: FORCE WAKEUP LOW. This is the magic key that selects SPI Mode!
   printf("\r\n[*] Waking up Inventek Module...\r\n");
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); // SPI Mode
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);  
   HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_RESET);
   HAL_Delay(50);
   HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_SET);
   HAL_Delay(500); 
-
-  // ---------------------------------------------------------
-  // 2. STAGE 0: DRAIN THE BOOT PROMPT
-  // ---------------------------------------------------------
   printf("[*] Draining internal boot prompt...\r\n");
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // CS Low
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);  
   
   uint8_t dummy = 0x0A;
   uint8_t rx_byte;
@@ -140,18 +136,13 @@ int main(void)
           printf("%c", rx_byte);
       }
   }
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); // CS High
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);  
   printf("\r\n[*] Boot prompt cleared. Radio is ready.\r\n");
 
-  // Give the radio 10ms to switch from TX to RX mode
+   
   HAL_Delay(10);
-
-  // ---------------------------------------------------------
-  // 3. STAGE 1: TRANSMIT THE COMMAND
-  // ---------------------------------------------------------
   printf("\r\n--- COMMENCING SPI ATTACK ---\r\n");
-  
-  // THE MAGIC FIX: We pre-swap the bytes so the 16-bit radio reads "I?\r\n"
+
   uint8_t tx_cmd[] = "?I\n\r"; 
   
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);
@@ -159,9 +150,6 @@ int main(void)
   HAL_SPI_Transmit(&hspi3, tx_cmd, 4, 100);
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);
 
-  // ---------------------------------------------------------
-  // 4. STAGE 2: DRAIN THE PAYLOAD
-  // ---------------------------------------------------------
   uint32_t timeout = HAL_GetTick() + 2000; 
   uint8_t got_payload = 0;
 
@@ -176,20 +164,20 @@ int main(void)
       HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
       printf("\r\n--- INVENTEK FIRMWARE STRING ---\r\n");
 
-      // FIX: Create a 2-byte array to hold the 16-bit words
+       
       uint8_t dummy_word[2] = {0x0A, 0x0A};
       uint8_t rx_word[2] = {0};
 
       while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
           
-          // Pull 2 bytes at a time from the SPI bus
+           
           HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
           
-          // Print byte 1 (The second byte received)
+           
           if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') {
               printf("%c", rx_word[1]);
           }
-          // Print byte 0 (The first byte received)
+           
           if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') {
               printf("%c", rx_word[0]);
           }
@@ -579,8 +567,8 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(ISM43362_SPI3_CSN_GPIO_Port, ISM43362_SPI3_CSN_Pin, GPIO_PIN_SET);
 
-   // Hold radio in Reset
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);       // Force BOOT0 Low (Normal Mode)
+    
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);        
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : M24SR64_Y_RF_DISABLE_Pin M24SR64_Y_GPO_Pin ISM43362_RST_Pin ISM43362_SPI3_CSN_Pin */
@@ -590,7 +578,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13; // PB12 (Boot), PB13 (Wakeup)
+  GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;  
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
