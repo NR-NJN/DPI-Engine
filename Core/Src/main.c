@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "secrets.h"
+#include <string.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -85,7 +86,37 @@ int _write(int file, char *ptr, int len) {
 /**
   * @brief  The application entry point.
   * @retval int
+
   */
+void Inventek_Send_Command(SPI_HandleTypeDef *hspi, const char* normal_string) 
+{
+    uint8_t tx_buffer[128] = {0}; // Buffer for our swapped bytes
+    int len = strlen(normal_string);
+    
+    // 1. We must pad the string to an EVEN length for the 16-bit radio
+    int padded_len = len;
+    if (len % 2 != 0) {
+        padded_len = len + 1;
+    }
+
+    // 2. Perform the Byte-Swap (Swap index 0 and 1, 2 and 3, etc.)
+    for (int i = 0; i < padded_len; i += 2) {
+        if (i + 1 < len) {
+            tx_buffer[i] = normal_string[i + 1];
+            tx_buffer[i + 1] = normal_string[i];
+        } else {
+            // If we are at an odd end, pad with a newline character
+            tx_buffer[i] = '\n';
+            tx_buffer[i + 1] = normal_string[i];
+        }
+    }
+
+    // 3. Transmit the properly swapped string
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // CS Low
+    HAL_Delay(1);
+    HAL_SPI_Transmit(hspi, tx_buffer, padded_len, 100);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);   // CS High
+}
 int main(void)
 {
 
@@ -141,53 +172,65 @@ int main(void)
 
    
   HAL_Delay(10);
-  printf("\r\n--- COMMENCING SPI ATTACK ---\r\n");
+  printf("\r\n[*] Configuring Wi-Fi Credentials...\r\n");
+  char cmd_buffer[100];
 
-  uint8_t tx_cmd[] = "?I\n\r"; 
-  
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);
-  HAL_Delay(1); 
-  HAL_SPI_Transmit(&hspi3, tx_cmd, 4, 100);
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);
+  // Step 1: Set SSID (C1 command)
+  sprintf(cmd_buffer, "C1=%s\r", WIFI_SSID);
+  Inventek_Send_Command(&hspi3, cmd_buffer);
+  HAL_Delay(100); // Give radio time to process
 
-  uint32_t timeout = HAL_GetTick() + 2000; 
-  uint8_t got_payload = 0;
+  // Step 2: Set Password (C2 command)
+  sprintf(cmd_buffer, "C2=%s\r", WIFI_PASS);
+  Inventek_Send_Command(&hspi3, cmd_buffer);
+  HAL_Delay(100);
 
-  while(HAL_GetTick() < timeout) {
+  // Step 3: Set Security Type to WPA2-AES (C3=4 command)
+  Inventek_Send_Command(&hspi3, "C3=4\r");
+  HAL_Delay(100);
+
+  // Step 4: Join the Network (C0 command)
+  printf("[*] Attempting to join network: %s...\r\n", WIFI_SSID);
+  Inventek_Send_Command(&hspi3, "C0\r");
+
+  // ---------------------------------------------------------
+  // DRAIN THE RESPONSE (Wait for "OK" or "ERROR")
+  // ---------------------------------------------------------
+  // Connecting to Wi-Fi can take a few seconds, so we need a longer timeout
+  uint32_t wifi_timeout = HAL_GetTick() + 10000; // 10-second patience
+  uint8_t got_response = 0;
+
+  while(HAL_GetTick() < wifi_timeout) {
       if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-          got_payload = 1;
+          got_response = 1;
           break;
       }
   }
 
-  if(got_payload) {
+  if(got_response) {
       HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
-      printf("\r\n--- INVENTEK FIRMWARE STRING ---\r\n");
+      printf("\r\n--- RADIO RESPONSE ---\r\n");
 
-       
       uint8_t dummy_word[2] = {0x0A, 0x0A};
       uint8_t rx_word[2] = {0};
 
       while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-          
-           
           HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
           
-           
           if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') {
               printf("%c", rx_word[1]);
           }
-           
           if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') {
               printf("%c", rx_word[0]);
           }
       }
 
       HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
-      printf("\r\n--------------------------------\r\n");
+      printf("\r\n----------------------\r\n");
   } else {
-      printf("[!] ERROR: Stage 2 Timeout.\r\n");
+      printf("[!] ERROR: Wi-Fi connection timed out.\r\n");
   }
+  
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
