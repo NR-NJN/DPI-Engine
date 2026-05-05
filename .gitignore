@@ -1,15 +1,12 @@
-# --- Security Credentials ---
-# NEVER push network passwords to GitHub
+
 Core/Inc/secrets.h
 
-# --- CMake Build Artifacts ---
-# Ignore the entire build directory so you don't push 50MB of compiled object files
+
 build/
 CMakeCache.txt
 CMakeFiles/
 
-# --- IDE Files ---
-# Ignore VSCode or STM32CubeIDE personal workspace settings
+
 .vscode/
 .project
 .cproject
