@@ -88,35 +88,56 @@ int _write(int file, char *ptr, int len) {
   * @retval int
 
   */
-void Inventek_Send_Command(SPI_HandleTypeDef *hspi, const char* normal_string) 
-{
-    uint8_t tx_buffer[128] = {0}; // Buffer for our swapped bytes
-    int len = strlen(normal_string);
-    
-    // 1. We must pad the string to an EVEN length for the 16-bit radio
-    int padded_len = len;
+void Inventek_Send_Command(SPI_HandleTypeDef *hspi, const char *cmd) {
+    uint8_t tx_buf[128] = {0}; 
+    uint16_t len = strlen(cmd);   
+    strcpy((char*)tx_buf, cmd);
+  
     if (len % 2 != 0) {
-        padded_len = len + 1;
+        tx_buf[len] = '\n';
+        len++;
+    }
+    
+     
+    for (int i = 0; i < len; i += 2) {
+        uint8_t temp = tx_buf[i];
+        tx_buf[i] = tx_buf[i+1];
+        tx_buf[i+1] = temp;
     }
 
-    // 2. Perform the Byte-Swap (Swap index 0 and 1, 2 and 3, etc.)
-    for (int i = 0; i < padded_len; i += 2) {
-        if (i + 1 < len) {
-            tx_buffer[i] = normal_string[i + 1];
-            tx_buffer[i + 1] = normal_string[i];
-        } else {
-            // If we are at an odd end, pad with a newline character
-            tx_buffer[i] = '\n';
-            tx_buffer[i + 1] = normal_string[i];
-        }
-    }
-
-    // 3. Transmit the properly swapped string
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); // CS Low
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);  
     HAL_Delay(1);
-    HAL_SPI_Transmit(hspi, tx_buffer, padded_len, 100);
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);   // CS High
+    HAL_SPI_Transmit(hspi, tx_buf, len, 100);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);    
+    HAL_Delay(10);
 }
+
+void Inventek_Drain_Response(SPI_HandleTypeDef *hspi) {
+    uint32_t wait_timeout = HAL_GetTick() + 1000;
+    
+     
+    while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_RESET && HAL_GetTick() < wait_timeout);
+    
+    if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
+        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
+        uint8_t dummy[2] = {0x0A, 0x0A}, rx[2] = {0};
+        uint32_t drain_timeout = HAL_GetTick() + 2000; 
+        
+        printf("  -> Radio replied: ");
+        while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET && HAL_GetTick() < drain_timeout) {
+            HAL_SPI_TransmitReceive(hspi, dummy, rx, 2, 10);
+            
+             
+            if((rx[1] >= 0x20 && rx[1] <= 0x7E) || rx[1] == '\r' || rx[1] == '\n') printf("%c", rx[1]);
+            if((rx[0] >= 0x20 && rx[0] <= 0x7E) || rx[0] == '\r' || rx[0] == '\n') printf("%c", rx[0]);
+        }
+        HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
+    } else {
+        printf("  -> [!] No response from radio.\r\n");
+    }
+    HAL_Delay(50);
+}
+
 int main(void)
 {
 
@@ -150,86 +171,82 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   
-  printf("\r\n[*] Waking up Inventek Module...\r\n");
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);  
-  HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_RESET);
-  HAL_Delay(50);
-  HAL_GPIO_WritePin(GPIOE, ISM43362_RST_Pin, GPIO_PIN_SET);
-  HAL_Delay(500); 
-  printf("[*] Draining internal boot prompt...\r\n");
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);  
+  printf("\r\n[*] --- ISOLATING AND WAKING THE RADIO ---\r\n");
   
-  uint8_t dummy = 0x0A;
-  uint8_t rx_byte;
-  while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-      HAL_SPI_TransmitReceive(&hspi3, &dummy, &rx_byte, 1, 10);
-      if((rx_byte >= 0x20 && rx_byte <= 0x7E) || rx_byte == '\r' || rx_byte == '\n') {
-          printf("%c", rx_byte);
-      }
-  }
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);  
-  printf("\r\n[*] Boot prompt cleared. Radio is ready.\r\n");
+   
+   
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET); 
 
    
-  HAL_Delay(10);
-  printf("\r\n[*] Configuring Wi-Fi Credentials...\r\n");
-  char cmd_buffer[100];
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_Delay(50); 
 
-  // Step 1: Set SSID (C1 command)
-  sprintf(cmd_buffer, "C1=%s\r", WIFI_SSID);
+   
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET); 
+
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
+  HAL_Delay(10);  
+
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, GPIO_PIN_SET);
+
+  HAL_Delay(50);
+
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
+ 
+  HAL_Delay(500);
+  printf("[*] Draining internal boot prompt...\r\n");
+  Inventek_Drain_Response(&hspi3);  
+  printf("[*] Boot prompt cleared. Radio is ready.\r\n");
+   
+ printf("\r\n[*] Configuring Wi-Fi Credentials...\r\n");
+  char cmd_buffer[128];
+
+  snprintf(cmd_buffer, sizeof(cmd_buffer), "C1=%s\r", WIFI_SSID);
   Inventek_Send_Command(&hspi3, cmd_buffer);
-  HAL_Delay(100); // Give radio time to process
-
-  // Step 2: Set Password (C2 command)
-  sprintf(cmd_buffer, "C2=%s\r", WIFI_PASS);
+  Inventek_Drain_Response(&hspi3); 
+  
+  snprintf(cmd_buffer, sizeof(cmd_buffer), "C2=%s\r", WIFI_PASS);
   Inventek_Send_Command(&hspi3, cmd_buffer);
-  HAL_Delay(100);
+  Inventek_Drain_Response(&hspi3); 
+  
+  Inventek_Send_Command(&hspi3, "C3=3\r");
+  Inventek_Drain_Response(&hspi3); 
+  
+   
+  Inventek_Send_Command(&hspi3, "C4=1\r");
+  Inventek_Drain_Response(&hspi3); 
+  
+  printf("\r\n[*] Attempting to join network and pull DHCP lease...\r\n");
+  Inventek_Send_Command(&hspi3, "C0\r"); 
+  
+  uint32_t join_timeout = HAL_GetTick() + 25000; 
 
-  // Step 3: Set Security Type to WPA2-AES (C3=4 command)
-  Inventek_Send_Command(&hspi3, "C3=4\r");
-  HAL_Delay(100);
+  printf("\r\n--- LIVE NETWORK LOG ---\r\n");
 
-  // Step 4: Join the Network (C0 command)
-  printf("[*] Attempting to join network: %s...\r\n", WIFI_SSID);
-  Inventek_Send_Command(&hspi3, "C0\r");
-
-  // ---------------------------------------------------------
-  // DRAIN THE RESPONSE (Wait for "OK" or "ERROR")
-  // ---------------------------------------------------------
-  // Connecting to Wi-Fi can take a few seconds, so we need a longer timeout
-  uint32_t wifi_timeout = HAL_GetTick() + 10000; // 10-second patience
-  uint8_t got_response = 0;
-
-  while(HAL_GetTick() < wifi_timeout) {
+  while(HAL_GetTick() < join_timeout) {
+      
+       
       if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-          got_response = 1;
-          break;
-      }
-  }
-
-  if(got_response) {
-      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET); 
-      printf("\r\n--- RADIO RESPONSE ---\r\n");
-
-      uint8_t dummy_word[2] = {0x0A, 0x0A};
-      uint8_t rx_word[2] = {0};
-
-      while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
-          HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
           
-          if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') {
-              printf("%c", rx_word[1]);
+          HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);  
+          
+          uint8_t dummy_word[2] = {0x0A, 0x0A}, rx_word[2] = {0};
+          uint32_t read_timeout = HAL_GetTick() + 2000;
+          
+          while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET && HAL_GetTick() < read_timeout) {
+              HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
+              
+              if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') printf("%c", rx_word[1]); 
+              if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') printf("%c", rx_word[0]); 
           }
-          if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') {
-              printf("%c", rx_word[0]);
-          }
+          
+          HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);   
+          HAL_Delay(50);   
       }
-
-      HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
-      printf("\r\n----------------------\r\n");
-  } else {
-      printf("[!] ERROR: Wi-Fi connection timed out.\r\n");
   }
+  
+  printf("\r\n--- END OF LOG ---\r\n");
+
   
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -629,7 +646,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : USB_OTG_FS_OVRCR_EXTI3_Pin SPSGRF_915_GPIO3_EXTI5_Pin SPBTLE_RF_IRQ_EXTI6_Pin ISM43362_DRDY_EXTI1_Pin */
   GPIO_InitStruct.Pin = USB_OTG_FS_OVRCR_EXTI3_Pin|SPSGRF_915_GPIO3_EXTI5_Pin|SPBTLE_RF_IRQ_EXTI6_Pin|ISM43362_DRDY_EXTI1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
@@ -686,7 +703,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : ARD_D3_Pin */
   GPIO_InitStruct.Pin = ARD_D3_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(ARD_D3_GPIO_Port, &GPIO_InitStruct);
 
@@ -709,7 +726,7 @@ static void MX_GPIO_Init(void)
                            PMOD_IRQ_EXTI12_Pin */
   GPIO_InitStruct.Pin = LPS22HB_INT_DRDY_EXTI0_Pin|LSM6DSL_INT1_EXTI11_Pin|ARD_D2_Pin|HTS221_DRDY_EXTI15_Pin
                           |PMOD_IRQ_EXTI12_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
@@ -729,7 +746,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : VL53L0X_GPIO1_EXTI7_Pin LSM3MDL_DRDY_EXTI8_Pin */
   GPIO_InitStruct.Pin = VL53L0X_GPIO1_EXTI7_Pin|LSM3MDL_DRDY_EXTI8_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
