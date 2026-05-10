@@ -219,13 +219,13 @@ int main(void)
   printf("\r\n[*] Attempting to join network and pull DHCP lease...\r\n");
   Inventek_Send_Command(&hspi3, "C0\r"); 
   
-  uint32_t join_timeout = HAL_GetTick() + 25000; 
+  uint32_t join_timeout = HAL_GetTick() + 35000; 
+  uint8_t joined = 0;  
 
   printf("\r\n--- LIVE NETWORK LOG ---\r\n");
 
-  while(HAL_GetTick() < join_timeout) {
+  while(HAL_GetTick() < join_timeout && !joined) {
       
-       
       if(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET) {
           
           HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_RESET);  
@@ -236,8 +236,16 @@ int main(void)
           while(HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_1) == GPIO_PIN_SET && HAL_GetTick() < read_timeout) {
               HAL_SPI_TransmitReceive(&hspi3, dummy_word, rx_word, 2, 10);
               
-              if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') printf("%c", rx_word[1]); 
-              if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') printf("%c", rx_word[0]); 
+              if((rx_word[1] >= 0x20 && rx_word[1] <= 0x7E) || rx_word[1] == '\r' || rx_word[1] == '\n') {
+                  printf("%c", rx_word[1]); 
+                   
+                  if(rx_word[1] == '>') joined = 1; 
+              }
+              if((rx_word[0] >= 0x20 && rx_word[0] <= 0x7E) || rx_word[0] == '\r' || rx_word[0] == '\n') {
+                  printf("%c", rx_word[0]); 
+                   
+                  if(rx_word[0] == '>') joined = 1;
+              }
           }
           
           HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET);   
@@ -246,6 +254,19 @@ int main(void)
   }
   
   printf("\r\n--- END OF LOG ---\r\n");
+ 
+  printf("\r\n[*] Transforming STM32 into a Routing Vertex (TCP Port 8080)...\r\n");
+
+  Inventek_Send_Command(&hspi3, "P1=0\r");
+  Inventek_Drain_Response(&hspi3);
+
+  Inventek_Send_Command(&hspi3, "P2=8080\r");
+  Inventek_Drain_Response(&hspi3);
+
+  Inventek_Send_Command(&hspi3, "P5=1\r");
+  Inventek_Drain_Response(&hspi3);
+
+  printf("\r\n[*] Vertex Online. Listening for incoming flows on Port 8080.\r\n");
 
   
   /* Infinite loop */
