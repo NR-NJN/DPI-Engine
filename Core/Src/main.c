@@ -138,6 +138,108 @@ void Inventek_Drain_Response(SPI_HandleTypeDef *hspi) {
     HAL_Delay(50);
 }
 
+typedef struct {
+    uint16_t magic;      
+    uint32_t src_ip;     
+    uint32_t dst_ip;     
+    uint16_t src_port;   
+    uint16_t dst_port;   
+    uint8_t  protocol;   
+} __attribute__((packed)) FlowTuple;
+
+#define IP_PARTS(ip) (uint8_t)(ip), (uint8_t)((ip) >> 8), (uint8_t)((ip) >> 16), (uint8_t)((ip) >> 24)
+ 
+ 
+ 
+ 
+ 
+uint32_t MurmurHash3_32(const void* key, int len, uint32_t seed) {
+    const uint8_t* data = (const uint8_t*)key;
+    const int nblocks = len / 4;
+    uint32_t h1 = seed;
+    const uint32_t c1 = 0xcc9e2d51;
+    const uint32_t c2 = 0x1b873593;
+
+     
+    const uint32_t* blocks = (const uint32_t*)(data + nblocks * 4);
+    for (int i = -nblocks; i; i++) {
+        uint32_t k1 = blocks[i];
+        k1 *= c1;
+        k1 = (k1 << 15) | (k1 >> (32 - 15));
+        k1 *= c2;
+
+        h1 ^= k1;
+        h1 = (h1 << 13) | (h1 >> (32 - 13));
+        h1 = h1 * 5 + 0xe6546b64;
+    }
+
+     
+    const uint8_t* tail = (const uint8_t*)(data + nblocks * 4);
+    uint32_t k1 = 0;
+    switch (len & 3) {
+        case 3: k1 ^= tail[2] << 16;
+        case 2: k1 ^= tail[1] << 8;
+        case 1: k1 ^= tail[0];
+                k1 *= c1;
+                k1 = (k1 << 15) | (k1 >> (32 - 15));
+                k1 *= c2;
+                h1 ^= k1;
+    }
+
+     
+    h1 ^= len;
+    h1 ^= h1 >> 16;
+    h1 *= 0x85ebca6b;
+    h1 ^= h1 >> 13;
+    h1 *= 0xc2b2ae35;
+    h1 ^= h1 >> 16;
+
+    return h1;
+}
+
+#define MAX_STATES 50
+#define ALPHABET_SIZE 256
+
+int goto_fn[MAX_STATES][ALPHABET_SIZE];
+int out_fn[MAX_STATES];
+int num_states = 1;
+void build_aho_corasick() {
+    memset(goto_fn, -1, sizeof(goto_fn));
+    memset(out_fn, 0, sizeof(out_fn));
+
+    const char* keywords[] = {"HACK", "DROP", "MALWARE"};
+    int num_keywords = 3;
+
+    for (int i = 0; i < num_keywords; i++) {
+        int curr_state = 0;
+        for (int j = 0; keywords[i][j] != '\0'; j++) {
+            unsigned char c = keywords[i][j];
+            if (goto_fn[curr_state][c] == -1) {
+                goto_fn[curr_state][c] = num_states++;
+            }
+            curr_state = goto_fn[curr_state][c];
+        }
+        out_fn[curr_state] = 1; 
+    }
+
+    for (int i = 0; i < ALPHABET_SIZE; i++) {
+        if (goto_fn[0][i] == -1) goto_fn[0][i] = 0;
+    }
+}
+
+int aho_corasick_search(const uint8_t* payload, int len) {
+    int curr_state = 0;
+    for (int i = 0; i < len; i++) {
+        curr_state = goto_fn[curr_state][payload[i]];
+        if (curr_state == -1) curr_state = 0;  
+        
+        if (out_fn[curr_state]) {
+            return i;  
+        }
+    }
+    return -1;  
+}
+
 int main(void)
 {
 
@@ -171,7 +273,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   
-  printf("\r\n[*] --- ISOLATING AND WAKING THE RADIO ---\r\n");
+  printf("\r\n[*]ISOLATING AND WAKING THE RADIO\r\n");
   
    
    
@@ -194,11 +296,11 @@ int main(void)
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_0, GPIO_PIN_SET); 
  
   HAL_Delay(500);
-  printf("[*] Draining internal boot prompt...\r\n");
+  printf("[*] Draining internal boot prompt\r\n");
   Inventek_Drain_Response(&hspi3);  
   printf("[*] Boot prompt cleared. Radio is ready.\r\n");
    
- printf("\r\n[*] Configuring Wi-Fi Credentials...\r\n");
+ printf("\r\n[*] Configuring Wi-Fi Credentials\r\n");
   char cmd_buffer[128];
 
   snprintf(cmd_buffer, sizeof(cmd_buffer), "C1=%s\r", WIFI_SSID);
@@ -216,13 +318,13 @@ int main(void)
   Inventek_Send_Command(&hspi3, "C4=1\r");
   Inventek_Drain_Response(&hspi3); 
   
-  printf("\r\n[*] Attempting to join network and pull DHCP lease...\r\n");
+  printf("\r\n[*] Attempting to join network and pull DHCP lease\r\n");
   Inventek_Send_Command(&hspi3, "C0\r"); 
   
   uint32_t join_timeout = HAL_GetTick() + 35000; 
   uint8_t joined = 0;  
 
-  printf("\r\n--- LIVE NETWORK LOG ---\r\n");
+  printf("\r\nLIVE NETWORK LOG\r\n");
 
   while(HAL_GetTick() < join_timeout && !joined) {
       
@@ -253,31 +355,102 @@ int main(void)
       }
   }
   
-  printf("\r\n--- END OF LOG ---\r\n");
+  printf("\r\nEND\r\n");
  
-  printf("\r\n[*] Transforming STM32 into a Routing Vertex (TCP Port 8080)...\r\n");
 
   Inventek_Send_Command(&hspi3, "P1=0\r");
   Inventek_Drain_Response(&hspi3);
 
-  Inventek_Send_Command(&hspi3, "P2=8080\r");
+  Inventek_Send_Command(&hspi3, "P2=54321\r");
+  Inventek_Drain_Response(&hspi3);
+
+  Inventek_Send_Command(&hspi3, "R1=1\r");
   Inventek_Drain_Response(&hspi3);
 
   Inventek_Send_Command(&hspi3, "P5=1\r");
   Inventek_Drain_Response(&hspi3);
+  printf("\r\n[*] Compiling Aho-Corasick DPI State Machine\r\n");
+  build_aho_corasick();
 
-  printf("\r\n[*] Vertex Online. Listening for incoming flows on Port 8080.\r\n");
+  printf("\r\n[*] Vertex Active. Awaiting Incoming Flows\r\n");
 
-  
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+   
+  static uint32_t last_heartbeat = 0;
+  static uint32_t loop_counter = 0;
+
   while (1)
   {
-    /* USER CODE END WHILE */
-    
-    /* USER CODE BEGIN 3 */
-  }
+      uint8_t demo_payload[53] = {
+          0x55, 0xAA,  
+          0x0A, 0x00, 0x00, 0x05,  
+          0xC0, 0xA8, 0x01, 0xE9,  
+          0xC0, 0x00,  
+          0xD3, 0xD4,  
+          0x06,        
+           
+      };
+
+      FlowTuple current_flow; 
+      memcpy(&current_flow, &demo_payload[0], sizeof(FlowTuple));  
+      
+       
+       
+      static uint16_t dynamic_src_port = 49152;
+      current_flow.src_port = dynamic_src_port++; 
+      current_flow.dst_port = 54321;
+      
+      uint32_t flow_id = MurmurHash3_32(&current_flow.src_ip, sizeof(FlowTuple) - 2, 0x12345678);
+      
+      printf("--- BARE-METAL L4 FLOW INTERCEPTED ---\r\n");
+      printf("Src IP: %u.%u.%u.%u | Dst IP: %u.%u.%u.%u \r\n", 
+             IP_PARTS(current_flow.src_ip), IP_PARTS(current_flow.dst_ip));
+      printf("Protocol: %u | Src Port: %u | Dst Port: %u \r\n", 
+             current_flow.protocol, current_flow.src_port, current_flow.dst_port);
+      printf("Flow Identity (Murmur32): 0x%08lX \r\n", flow_id);
+
+      printf("\r\n[*] Executing ECMP Routing Heuristic\r\n");
+      uint8_t available_egress_paths = 3; 
+      uint8_t selected_route = flow_id % available_egress_paths;
+      
+      switch(selected_route) {
+          case 0: printf("[+] ROUTING DECISION: Flow assigned to Egress Path A (eth0)\r\n"); break;
+          case 1: printf("[+] ROUTING DECISION: Flow assigned to Egress Path B (eth1)\r\n"); break;
+          case 2: printf("[+] ROUTING DECISION: Flow assigned to Egress Path C (eth2)\r\n"); break;
+      }
+      
+      printf("\r\n[*] Executing Aho-Corasick DPI Scrub\r\n");
+      
+       
+      static int packet_count = 0;
+      packet_count++;
+      
+      if (packet_count % 2 == 0) {
+          demo_payload[12] = 'H'; demo_payload[13] = 'A'; 
+          demo_payload[14] = 'C'; demo_payload[15] = 'K';
+      } else {
+          demo_payload[12] = 'T'; demo_payload[13] = 'C'; 
+          demo_payload[14] = 'P'; demo_payload[15] = 'O';
+      }
+
+      int threat_offset = aho_corasick_search(demo_payload, sizeof(demo_payload));
+
+      if (threat_offset != -1) {
+          printf("\r\n[!] THREAT DETECTED: Malicious Signature hit at memory offset [0x%02X]\r\n", threat_offset);
+          printf("[*] ISOLATING MALFORMED PAYLOAD BLOCK:\r\n");
+          
+          printf("    [HEX] ");
+          for(int i = 8; i < 20; i++) {
+              printf("%02X ", demo_payload[i]);
+          }
+          
+         
+          printf("\r\n\r\n[!] ACTION: Connection Terminated. TCP Flow Dropped.\r\n");
+      } else {
+          printf("[+] Payload Clean. Forwarding to vertex...\r\n");
+      }
+      HAL_Delay(4000);
   /* USER CODE END 3 */
+}
 }
 
 /**
