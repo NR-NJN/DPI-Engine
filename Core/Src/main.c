@@ -20,6 +20,7 @@
 #include "main.h"
 #include "secrets.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -207,13 +208,23 @@ void build_aho_corasick() {
     memset(goto_fn, -1, sizeof(goto_fn));
     memset(out_fn, 0, sizeof(out_fn));
 
-    const char* keywords[] = {"HACK", "DROP", "MALWARE"};
-    int num_keywords = 3;
+    // --- REAL CVE HEX SIGNATURES ---
+    // 1. Log4Shell JNDI Trigger ("${jndi:")
+    const uint8_t sig_log4j[] = {0x24, 0x7B, 0x6A, 0x6E, 0x64, 0x69, 0x3A}; 
+    // 2. x86 Buffer Overflow (NOP Sled)
+    const uint8_t sig_nop[]   = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};             
+    // 3. Heartbleed Malformed TLS Heartbeat
+    const uint8_t sig_heart[] = {0x18, 0x03, 0x02, 0x00, 0x03};             
 
-    for (int i = 0; i < num_keywords; i++) {
+    const uint8_t* signatures[] = {sig_log4j, sig_nop, sig_heart};
+    const int sig_lengths[] = {sizeof(sig_log4j), sizeof(sig_nop), sizeof(sig_heart)};
+    int num_signatures = 3;
+
+    // Build the state machine strictly using raw byte values (0x00 - 0xFF)
+    for (int i = 0; i < num_signatures; i++) {
         int curr_state = 0;
-        for (int j = 0; keywords[i][j] != '\0'; j++) {
-            unsigned char c = keywords[i][j];
+        for (int j = 0; j < sig_lengths[i]; j++) {
+            uint8_t c = signatures[i][j]; // Extract exact hex byte
             if (goto_fn[curr_state][c] == -1) {
                 goto_fn[curr_state][c] = num_states++;
             }
@@ -226,7 +237,17 @@ void build_aho_corasick() {
         if (goto_fn[0][i] == -1) goto_fn[0][i] = 0;
     }
 }
-
+//defined int goto_fn[MAX_STATES][256], created a grid in memory.The Y-axis is your current state.
+// The X-axis has exactly 256 slots. This perfectly matches the 256 possible values of an 8-bit byte. 
+// When the processor reads a byte from the incoming payload let's say it reads 0x18  the first byte of the TLS Heartbleed trigger it does not ask, "
+// Does 0x18 equal 0x18?" Instead, the processor takes the literal integer value of 0x18 (which is 24 in decimal) and uses it as the Column Number.It immediately
+//  jumps to Row 0, Column 24 in the memory matrix. Sitting inside that exact cell is a pre-calculated integer telling the board what the next state is
+//  brilliant for an edge proxy:Because the raw packet data is being used as a literal memory address pointer, 
+// the time complexity to evaluate a byte is $O(1)$. It takes exactly one clock cycle to fetch the next state, regardless of whether you have 3 signatures
+//  loaded or 14,000
+// When you create a 2D array in C like goto_fn[state][byte], the compiler translates that into a literal physical address in the RAM.
+// When the processor reads a byte from the network (let's say 0x18), it does not loop through a list looking for 0x18. Instead, the ALUs 
+// inside the ARM Cortex execute a hardwired calculation:
 int aho_corasick_search(const uint8_t* payload, int len) {
     int curr_state = 0;
     for (int i = 0; i < len; i++) {
@@ -381,27 +402,37 @@ int main(void)
   while (1)
   {
       uint8_t demo_payload[53] = {
-          0x55, 0xAA,  
-          0x0A, 0x00, 0x00, 0x05,  
-          0xC0, 0xA8, 0x01, 0xE9,  
-          0xC0, 0x00,  
-          0xD3, 0xD4,  
-          0x06,        
-           
+          0x55, 0xAA, // Magic Header
+          0x00, 0x00, 0x00, 0x00, // Placeholder for Src IP
+          0xC0, 0xA8, 0x01, 0xE9, // Dst IP: 192.168.1.233 (The Proxy VIP)
+          0xC0, 0x00, // Src Port placeholder
+          0xD3, 0xD4, // Dst Port: 54321
+          0x06,       // Protocol: TCP
+          // ... trailing payload bytes
       };
 
+      // --- LIVE DISTRIBUTED ATTACK SIMULATION ---
+      // Generate a completely random global Source IP to simulate a distributed botnet
+      demo_payload[2] = (uint8_t)(rand() % 223 + 1); // 1-223 (Public IP ranges)
+      demo_payload[3] = (uint8_t)(rand() % 256);
+      demo_payload[4] = (uint8_t)(rand() % 256);
+      demo_payload[5] = (uint8_t)(rand() % 256);
+
       FlowTuple current_flow; 
-      memcpy(&current_flow, &demo_payload[0], sizeof(FlowTuple));  
+      memcpy(&current_flow, &demo_payload[0], sizeof(FlowTuple)); 
       
-       
-       
+      // Dynamically increment the port 
       static uint16_t dynamic_src_port = 49152;
       current_flow.src_port = dynamic_src_port++; 
       current_flow.dst_port = 54321;
       
-      uint32_t flow_id = MurmurHash3_32(&current_flow.src_ip, sizeof(FlowTuple) - 2, 0x12345678);
+      uint32_t flow_id = MurmurHash3_32(&current_flow.src_ip, sizeof(FlowTuple) - 2, 0x12345678); 
+      //route this flow without using a memoryheavy state table. 
+      // We take that extracted 5-Tuple and pass it by reference into a murmurhash3 algorithm. This is a noncryptographic hash function 
+      // optimized for silicon. It crushes the IP and Port data down into a highly unique, deterministic 32bit integer, 
+      // store here"
       
-      printf("--- BARE-METAL L4 FLOW INTERCEPTED ---\r\n");
+      printf("L4 FLOW INTERCEPTED \r\n");
       printf("Src IP: %u.%u.%u.%u | Dst IP: %u.%u.%u.%u \r\n", 
              IP_PARTS(current_flow.src_ip), IP_PARTS(current_flow.dst_ip));
       printf("Protocol: %u | Src Port: %u | Dst Port: %u \r\n", 
@@ -410,6 +441,9 @@ int main(void)
 
       printf("\r\n[*] Executing ECMP Routing Heuristic\r\n");
       uint8_t available_egress_paths = 3; 
+      //The processor takes that 32bit flow_id and runs a modulo operation against our available virtual egress paths in this case, three.
+      //Because the murmurHash is strictly deterministic, every single packet originating from the same client session will result in the exact same 32
+      // bit hash, and therefore, the exact same modulo remainder. This guarantees perfect TCP session persistence.
       uint8_t selected_route = flow_id % available_egress_paths;
       
       switch(selected_route) {
@@ -425,11 +459,16 @@ int main(void)
       packet_count++;
       
       if (packet_count % 2 == 0) {
-          demo_payload[12] = 'H'; demo_payload[13] = 'A'; 
-          demo_payload[14] = 'C'; demo_payload[15] = 'K';
+          demo_payload[12] = 0x24; demo_payload[13] = 0x7B; 
+          demo_payload[14] = 0x6A; demo_payload[15] = 0x6E;
+          demo_payload[16] = 0x64; demo_payload[17] = 0x69;
+          demo_payload[18] = 0x3A; 
       } else {
-          demo_payload[12] = 'T'; demo_payload[13] = 'C'; 
-          demo_payload[14] = 'P'; demo_payload[15] = 'O';
+          // Standard HTTP GET bytes
+          demo_payload[12] = 0x47; demo_payload[13] = 0x45; 
+          demo_payload[14] = 0x54; demo_payload[15] = 0x20;
+          demo_payload[16] = 0x2F; demo_payload[17] = 0x20;
+          demo_payload[18] = 0x48; 
       }
 
       int threat_offset = aho_corasick_search(demo_payload, sizeof(demo_payload));
